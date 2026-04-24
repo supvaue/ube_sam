@@ -1,0 +1,14 @@
+# @package _global_
+
+defaults:
+  - /configs/rvos_training/custom/task1_coco_try
+  - _self_
+
+scratch:
+  num_epochs: 6
+
+trainer:
+  checkpoint:
+    save_freq: 1
+    resume_from: "./sam2_logs/configs/rvos_training/custom/task1_coco_try/checkpoints/checkpoint.pt"
+

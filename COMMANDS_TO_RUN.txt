@@ -1,0 +1,174 @@
+# ReSurgSAM2 - Commands to Run
+# I will keep updating this file as we proceed.
+
+################################################################################
+# 0) Activate environment and enter project
+################################################################################
+source /home/xu/software/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate resurgsam2
+cd /home/xu/Code/ReSurgSAM2/ReSurgSAM2-main
+
+################################################################################
+# 1) Check whether Stage-1 finetuning is running
+################################################################################
+ps -ef | grep -E "training/train.py -c configs/rvos_training/custom/task1_coco_ft_stage1" | grep -v grep
+
+################################################################################
+# 2) Watch Stage-1 training log (real-time)
+################################################################################
+tail -f /home/xu/Code/ReSurgSAM2/ReSurgSAM2-main/sam2_logs/configs/rvos_training/custom/task1_coco_ft_stage1/logs/log.txt
+
+################################################################################
+# 3) If needed, (re)start Stage-1 finetuning
+################################################################################
+python training/train.py -c configs/rvos_training/custom/task1_coco_ft_stage1 --num-gpus 1
+
+################################################################################
+# 4) Run validation inference for Stage-1 checkpoint
+################################################################################
+# 4.1 Validate the last Stage-1 checkpoint (checkpoint.pt)
+python tools/rvos_inference.py \
+  --training_config_file configs/rvos_training/custom/task1_coco_ft_stage1 \
+  --sam2_cfg configs/sam2.1/sam2.1_hiera_s_rvos.yaml \
+  --sam2_checkpoint sam2_logs/configs/rvos_training/custom/task1_coco_ft_stage1/checkpoints/checkpoint.pt \
+  --dataset_root data/Task1CocoFT/valid \
+  --output_mask_dir results/task1cocoft_stage1_valid \
+  --gpu_id 0 \
+  --apply_long_term_memory \
+  --num_cifs_candidate_frame 5
+
+# 4.2 Check which Stage-1 epoch has the lowest train loss (quick heuristic)
+python - <<'PY'
+import json
+p='sam2_logs/configs/rvos_training/custom/task1_coco_ft_stage1/logs/train_stats.json'
+rows=[]
+with open(p) as f:
+    for line in f:
+        if line.strip():
+            d=json.loads(line)
+            rows.append((d['Trainer/epoch'], d['Losses/train_all_loss']))
+print('best_by_train_loss=', min(rows, key=lambda x:x[1]), 'last=', rows[-1])
+PY
+
+# 4.3 Validate a specific Stage-1 checkpoint (example: checkpoint_2.pt)
+python tools/rvos_inference.py \
+  --training_config_file configs/rvos_training/custom/task1_coco_ft_stage1 \
+  --sam2_cfg configs/sam2.1/sam2.1_hiera_s_rvos.yaml \
+  --sam2_checkpoint sam2_logs/configs/rvos_training/custom/task1_coco_ft_stage1/checkpoints/checkpoint_2.pt \
+  --dataset_root data/Task1CocoFT/valid \
+  --output_mask_dir results/task1cocoft_stage1_valid_ckpt2 \
+  --gpu_id 0 \
+  --apply_long_term_memory \
+  --num_cifs_candidate_frame 5
+
+################################################################################
+# 5) Start Stage-2 finetuning (resume from Stage-1)
+################################################################################
+# Default stage2 config resumes from:
+# sam2_logs/configs/rvos_training/custom/task1_coco_ft_stage1/checkpoints/checkpoint.pt
+python training/train.py -c configs/rvos_training/custom/task1_coco_ft_stage2 --num-gpus 1
+
+################################################################################
+# 6) Run validation inference for Stage-2 checkpoint
+################################################################################
+python tools/rvos_inference.py \
+  --training_config_file configs/rvos_training/custom/task1_coco_ft_stage2 \
+  --sam2_cfg configs/sam2.1/sam2.1_hiera_s_rvos.yaml \
+  --sam2_checkpoint sam2_logs/configs/rvos_training/custom/task1_coco_ft_stage2/checkpoints/checkpoint.pt \
+  --dataset_root data/Task1CocoFT/valid \
+  --output_mask_dir results/task1cocoft_stage2_valid \
+  --gpu_id 0 \
+  --apply_long_term_memory \
+  --num_cifs_candidate_frame 5
+
+################################################################################
+# V2 DATASET ROUND (datasets/v2_cropped -> Task1CocoV2FT)
+################################################################################
+
+# A) Start Stage-1 finetune on V2 dataset
+python training/train.py -c configs/rvos_training/custom/task1_coco_v2_ft_stage1 --num-gpus 1
+
+# B) Watch Stage-1 V2 log
+tail -f /home/xu/Code/ReSurgSAM2/ReSurgSAM2-main/sam2_logs/configs/rvos_training/custom/task1_coco_v2_ft_stage1/logs/log.txt
+
+# C) Validate Stage-1 V2 checkpoint
+python tools/rvos_inference.py \
+  --training_config_file configs/rvos_training/custom/task1_coco_v2_ft_stage1 \
+  --sam2_cfg configs/sam2.1/sam2.1_hiera_s_rvos.yaml \
+  --sam2_checkpoint sam2_logs/configs/rvos_training/custom/task1_coco_v2_ft_stage1/checkpoints/checkpoint.pt \
+  --dataset_root data/Task1CocoV2FT/valid \
+  --output_mask_dir results/task1cocov2ft_stage1_valid \
+  --gpu_id 0 \
+  --offload_video_to_cpu \
+  --offload_state_to_cpu
+
+# D) Start Stage-2 finetune on V2 dataset
+python training/train.py -c configs/rvos_training/custom/task1_coco_v2_ft_stage2 --num-gpus 1
+
+# E) Validate Stage-2 V2 checkpoint
+python tools/rvos_inference.py \
+  --training_config_file configs/rvos_training/custom/task1_coco_v2_ft_stage2 \
+  --sam2_cfg configs/sam2.1/sam2.1_hiera_s_rvos.yaml \
+  --sam2_checkpoint sam2_logs/configs/rvos_training/custom/task1_coco_v2_ft_stage2/checkpoints/checkpoint.pt \
+  --dataset_root data/Task1CocoV2FT/valid \
+  --output_mask_dir results/task1cocov2ft_stage2_valid \
+  --gpu_id 0 \
+  --offload_video_to_cpu \
+  --offload_state_to_cpu
+
+################################################################################
+# F) V2 RESULT PATHS / QUICK CHECK COMMANDS
+################################################################################
+
+# F.1 Final recommended checkpoint (Stage-2 best in current round)
+ls -lh sam2_logs/configs/rvos_training/custom/task1_coco_v2_ft_stage2/checkpoints/checkpoint.pt
+
+# F.2 Validation metric CSVs (for quantitative comparison)
+cat results/task1cocov2ft_stage1_valid/results.csv
+cat results/task1cocov2ft_stage2_valid/results.csv
+
+# F.3 Metric visualization outputs (global + per-object)
+ls -lh results/task1cocov2ft_eval_viz
+
+# F.4 Side-by-side sample images (left: original, right: prediction overlay)
+ls -lh results/task1cocov2ft_eval_viz/sample_side_by_side
+
+# F.5 Contact sheet + selected frame list
+ls -lh results/task1cocov2ft_eval_viz/sample_side_by_side/contact_sheet.png
+cat results/task1cocov2ft_eval_viz/sample_side_by_side/selected_frames.txt
+
+################################################################################
+# G) V2 STAGE-3 (More parameter release + longer training)
+################################################################################
+
+# G.1 Start Stage-3 finetune (resume from Stage-2 final checkpoint)
+python training/train.py -c configs/rvos_training/custom/task1_coco_v2_ft_stage3 --num-gpus 1
+
+# G.2 Watch Stage-3 training log
+tail -f /home/xu/Code/ReSurgSAM2/ReSurgSAM2-main/sam2_logs/configs/rvos_training/custom/task1_coco_v2_ft_stage3/logs/log.txt
+
+# G.3 Validate Stage-3 checkpoint
+python tools/rvos_inference.py \
+  --training_config_file configs/rvos_training/custom/task1_coco_v2_ft_stage3 \
+  --sam2_cfg configs/sam2.1/sam2.1_hiera_s_rvos.yaml \
+  --sam2_checkpoint sam2_logs/configs/rvos_training/custom/task1_coco_v2_ft_stage3/checkpoints/checkpoint.pt \
+  --dataset_root data/Task1CocoV2FT/valid \
+  --output_mask_dir results/task1cocov2ft_stage3_valid \
+  --gpu_id 0 \
+  --offload_video_to_cpu \
+  --offload_state_to_cpu
+
+################################################################################
+# H) STAGE-3 RESULT PATHS / QUICK CHECK
+################################################################################
+
+# H.1 Stage-3 validation result CSV
+cat results/task1cocov2ft_stage3_valid/results.csv
+
+# H.2 Stage-3 visualization outputs (metrics + deltas)
+ls -lh results/task1cocov2ft_stage3_eval_viz
+
+# H.3 Stage-3 frame-level side-by-side visualizations
+ls -lh results/task1cocov2ft_stage3_eval_viz/sample_side_by_side
+ls -lh results/task1cocov2ft_stage3_eval_viz/sample_side_by_side/contact_sheet.png
+cat results/task1cocov2ft_stage3_eval_viz/sample_side_by_side/selected_frames.txt

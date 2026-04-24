@@ -1,0 +1,30 @@
+# @package _global_
+
+defaults:
+  - /configs/rvos_training/custom/task1_coco_try
+  - _self_
+
+scratch:
+  num_epochs: 12
+  pretrained_epoch: 12
+  base_lr: 1.0e-5
+  vision_lr: 1.0e-6
+  cross_modal_lr: 5.0e-5
+  train_batch_size: 1
+  num_train_workers: 4
+  num_tracking_frames: 0
+  dataset_name: "Ref-Endovis18"
+
+dataset:
+  img_folder: "data/Task1CocoFT/train/JPEGImages"
+  gt_folder: "data/Task1CocoFT/train/Annotations"
+  used_object_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+
+trainer:
+  checkpoint:
+    save_freq: 1
+    resume_from: null
+
+launcher:
+  gpus_per_node: 1
+

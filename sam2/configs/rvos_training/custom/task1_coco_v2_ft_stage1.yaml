@@ -1,0 +1,15 @@
+# @package _global_
+
+defaults:
+  - /configs/rvos_training/custom/task1_coco_ft_stage1
+  - _self_
+
+dataset:
+  img_folder: "data/Task1CocoV2FT/train/JPEGImages"
+  gt_folder: "data/Task1CocoV2FT/train/Annotations"
+  used_object_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+
+trainer:
+  checkpoint:
+    resume_from: null
+

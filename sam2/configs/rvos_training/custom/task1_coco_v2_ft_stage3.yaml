@@ -1,0 +1,19 @@
+# @package _global_
+
+defaults:
+  - /configs/rvos_training/custom/task1_coco_v2_ft_stage2
+  - _self_
+
+scratch:
+  # Continue from completed stage-2 and train longer with broader parameter updates.
+  num_epochs: 40
+  pretrained_epoch: 0
+  base_lr: 8.0e-6
+  vision_lr: 1.0e-6
+  cross_modal_lr: 3.0e-5
+
+trainer:
+  checkpoint:
+    save_freq: 1
+    resume_from: "./sam2_logs/configs/rvos_training/custom/task1_coco_v2_ft_stage2/checkpoints/checkpoint.pt"
+
