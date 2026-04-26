@@ -1,0 +1,19 @@
+# @package _global_
+
+defaults:
+  - /configs/rvos_training/custom/task1_coco_v2_ft_stage2
+  - _self_
+
+scratch:
+  num_epochs: 25
+  pretrained_epoch: 0
+  base_lr: 2.0e-6
+  vision_lr: 2.0e-7
+  cross_modal_lr: 8.0e-6
+  train_batch_size: 1
+  num_train_workers: 4
+
+trainer:
+  checkpoint:
+    save_freq: 1
+    resume_from: "./sam2_logs/configs/rvos_training/custom/task1_coco_v2_ft_stage2/checkpoints/checkpoint.pt"
