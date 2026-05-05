@@ -30,13 +30,17 @@ class CrossModalFusionModule(nn.Module):
         num_temp_pos_embed: int=3,
         pad_sequence: bool=False,
         num_ref_frames: int=3,
+        condition_fusion_mode: str="twoway",
     ):
         super().__init__()
+        if condition_fusion_mode not in {"twoway", "film_mlp", "hybrid_film_mlp"}:
+            raise ValueError(f"Unsupported condition_fusion_mode: {condition_fusion_mode}")
         self.transformer_dim = transformer_dim
         self.image_embedding_size = image_embedding_size
         self.num_temp_pos_embed = num_temp_pos_embed
         self.pad_sequence = pad_sequence
         self.num_ref_frames = num_ref_frames
+        self.condition_fusion_mode = condition_fusion_mode
 
         self.transformer = TwoWayTokenTransformer(
             depth=depth,
@@ -50,14 +54,23 @@ class CrossModalFusionModule(nn.Module):
             sp_bimamba=use_sp_bimamba,
             use_dwconv=use_dwconv,
             dropout=dropout,
+            condition_fusion_mode=condition_fusion_mode,
         )
-        print("CrossModalFusionModule depth=", depth)
+        print("CrossModalFusionModule depth=", depth, "condition_fusion_mode=", condition_fusion_mode)
         self.cls_token = nn.Embedding(1, transformer_dim)
         self.use_feature_level = use_feature_level
         self.temporal_pos_embed = nn.Parameter(torch.zeros(1, num_temp_pos_embed, transformer_dim))
         self.use_dwconv = use_dwconv
 
         self.apply(self._init_weights)
+        self._init_condition_fusion_identity()
+
+    def set_condition_fusion_mode(self, mode: str) -> None:
+        if mode not in {"twoway", "film_mlp", "hybrid_film_mlp"}:
+            raise ValueError(f"Unsupported condition_fusion_mode: {mode}")
+        self.condition_fusion_mode = mode
+        if hasattr(self.transformer, "set_condition_fusion_mode"):
+            self.transformer.set_condition_fusion_mode(mode)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -67,6 +80,12 @@ class CrossModalFusionModule(nn.Module):
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
+
+    def _init_condition_fusion_identity(self) -> None:
+        for module in self.modules():
+            if hasattr(module, "image_to_token_film"):
+                nn.init.zeros_(module.image_to_token_film.weight)
+                nn.init.zeros_(module.image_to_token_film.bias)
 
     def forward(
         self,
@@ -161,6 +180,7 @@ class TwoWayTokenTransformer(nn.Module):
         sp_bimamba: bool = False,
         use_dwconv: bool = False,
         dropout: float = 0.1,
+        condition_fusion_mode: str = "twoway",
     ) -> None:
         """
         A transformer decoder that attends to an input image using
@@ -175,11 +195,14 @@ class TwoWayTokenTransformer(nn.Module):
           activation (nn.Module): the activation to use in the MLP block
         """
         super().__init__()
+        if condition_fusion_mode not in {"twoway", "film_mlp", "hybrid_film_mlp"}:
+            raise ValueError(f"Unsupported condition_fusion_mode: {condition_fusion_mode}")
         self.depth = depth
         self.embedding_dim = embedding_dim
         self.num_heads = num_heads
         self.mlp_dim = mlp_dim
         self.use_dwconv = use_dwconv
+        self.condition_fusion_mode = condition_fusion_mode
         self.layers = nn.ModuleList()
 
         mamba_depths = [2 for i in range(depth)]
@@ -200,6 +223,7 @@ class TwoWayTokenTransformer(nn.Module):
                     sp_bimamba=sp_bimamba,
                     use_dwconv=use_dwconv,
                     dropout=dropout,
+                    condition_fusion_mode=condition_fusion_mode,
                 )
             )
 
@@ -207,6 +231,14 @@ class TwoWayTokenTransformer(nn.Module):
             embedding_dim, num_heads, downsample_rate=attention_downsample_rate
         )
         self.norm_final_attn = nn.LayerNorm(embedding_dim)
+
+    def set_condition_fusion_mode(self, mode: str) -> None:
+        if mode not in {"twoway", "film_mlp", "hybrid_film_mlp"}:
+            raise ValueError(f"Unsupported condition_fusion_mode: {mode}")
+        self.condition_fusion_mode = mode
+        for layer in self.layers:
+            if hasattr(layer, "set_condition_fusion_mode"):
+                layer.set_condition_fusion_mode(mode)
 
     def forward(
         self,
@@ -268,6 +300,7 @@ class TwoWayTokenAttentionBlock(nn.Module):
         sp_bimamba: bool = False,
         use_dwconv: bool = False,
         dropout: float = 0.2,
+        condition_fusion_mode: str = "twoway",
     ) -> None:
         """
         A transformer block with four layers: (1) self-attention of sparse
@@ -283,6 +316,9 @@ class TwoWayTokenAttentionBlock(nn.Module):
           skip_first_layer_pe (bool): skip the PE on the first layer
         """
         super().__init__()
+        if condition_fusion_mode not in {"twoway", "film_mlp", "hybrid_film_mlp"}:
+            raise ValueError(f"Unsupported condition_fusion_mode: {condition_fusion_mode}")
+        self.condition_fusion_mode = condition_fusion_mode
         self.self_attn = Attention(embedding_dim, num_heads)
         self.norm1 = nn.LayerNorm(embedding_dim)
 
@@ -300,6 +336,12 @@ class TwoWayTokenAttentionBlock(nn.Module):
         self.cross_attn_image_to_token = Attention(
             embedding_dim, num_heads, downsample_rate=attention_downsample_rate
         )
+        self.image_to_token_mlp = MLPDropout(
+            embedding_dim, mlp_dim, embedding_dim, num_layers=2, activation=activation, dropout=dropout
+        )
+        self.image_to_token_film = nn.Linear(embedding_dim, embedding_dim * 2)
+        nn.init.zeros_(self.image_to_token_film.weight)
+        nn.init.zeros_(self.image_to_token_film.bias)
 
         self.skip_first_layer_pe = skip_first_layer_pe
         self.use_mamba_before_cross_attn = use_mamba_before_cross_attn
@@ -317,6 +359,17 @@ class TwoWayTokenAttentionBlock(nn.Module):
                     )
                 )
             print("TwoWayTokenAttentionBlock use_mamba_before_cross_attn")
+
+    def set_condition_fusion_mode(self, mode: str) -> None:
+        if mode not in {"twoway", "film_mlp", "hybrid_film_mlp"}:
+            raise ValueError(f"Unsupported condition_fusion_mode: {mode}")
+        self.condition_fusion_mode = mode
+
+    def _conditioned_image_mlp(self, keys: Tensor, queries: Tensor) -> Tensor:
+        condition = queries.mean(dim=1)
+        gamma, beta = self.image_to_token_film(condition).unsqueeze(1).chunk(2, dim=-1)
+        mlp_out = self.image_to_token_mlp(keys)
+        return torch.tanh(gamma) * mlp_out + beta
 
     def forward(
         self, queries: Tensor, keys: Tensor, query_pe: Tensor, key_pe: Tensor, vol_sizes: Tuple[int, int, int]=None
@@ -346,11 +399,16 @@ class TwoWayTokenAttentionBlock(nn.Module):
         queries = queries + mlp_out
         queries = self.norm3(queries)
 
-        # Cross attention block, image embedding attending to tokens
-        q = queries + query_pe
-        k = keys + key_pe
-        attn_out = self.cross_attn_image_to_token(q=k, k=q, v=queries)
-        keys = keys + attn_out
+        # Condition the image tokens with the mask/prior tokens. The original
+        # ReSurgSAM2 path uses token->image cross-attention; for mask priors we
+        # also support a more controlled FiLM-style MLP update.
+        if self.condition_fusion_mode in {"twoway", "hybrid_film_mlp"}:
+            q = queries + query_pe
+            k = keys + key_pe
+            attn_out = self.cross_attn_image_to_token(q=k, k=q, v=queries)
+            keys = keys + attn_out
+        if self.condition_fusion_mode in {"film_mlp", "hybrid_film_mlp"}:
+            keys = keys + self._conditioned_image_mlp(keys, queries)
         keys = self.norm4(keys)
 
         return queries, keys

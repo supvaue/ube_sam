@@ -243,18 +243,22 @@ class SAM2Base(torch.nn.Module):
     def _build_cross_modal_modules(self):
         image_embedding_size = self.image_size // self.backbone_stride
 
-        clip = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-        self.language_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
-        self.language_model = clip.text_model
-        if self.cross_modal_dropout != 0:
-            self.token_projection = MLPDropout(self.language_model.config.hidden_size, self.cross_modal_hidden, self.hidden_dim,
-                                               3, dropout=self.cross_modal_dropout, initialized=True)
-            print("Using MLP with dropout for token projection")
+        if self.forward_text_emb:
+            clip = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+            self.language_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+            self.language_model = clip.text_model
+            if self.cross_modal_dropout != 0:
+                self.token_projection = MLPDropout(self.language_model.config.hidden_size, self.cross_modal_hidden, self.hidden_dim,
+                                                   3, dropout=self.cross_modal_dropout, initialized=True)
+                print("Using MLP with dropout for token projection")
+            else:
+                self.token_projection = MLP(self.language_model.config.hidden_size, self.cross_modal_hidden, self.hidden_dim, 3)
+            # freeze the language model
+            for p in self.language_model.parameters():
+                p.requires_grad_(False)
         else:
-            self.token_projection = MLP(self.language_model.config.hidden_size, self.cross_modal_hidden, self.hidden_dim, 3)
-        # freeze the language model
-        for p in self.language_model.parameters():
-            p.requires_grad_(False)
+            self.language_tokenizer = None
+            self.language_model = None
 
         if len(self.use_feature_level) == 1:
             print(f"Using mamba setting: use_mamba_attn={self.use_mamba_attn} use_bi_mamba={self.use_bimamba}, "
@@ -513,7 +517,7 @@ class SAM2Base(torch.nn.Module):
             )
         else:
             # produce an object pointer using the SAM decoder from the mask input
-            _, _, _, _, _, obj_ptr, _, _, _ = self._forward_sam_heads(
+            _, _, _, _, _, obj_ptr, _ = self._forward_sam_heads(
                 backbone_features=backbone_features,
                 mask_inputs=self.mask_downsample(mask_inputs_float),
                 high_res_features=high_res_features,
@@ -847,35 +851,43 @@ class SAM2Base(torch.nn.Module):
         # Add text embedding, text input has the highest priority
         if run_referring:
             # Get the features after text and image feature activation
+            referring_vision_feats = list(current_vision_feats)
             fusion_image_embeddings, text_cls_tokens = self.cross_modal_fusion(
-                image_embeddings=current_vision_feats,
+                image_embeddings=referring_vision_feats,
                 image_pe=current_vision_pos_embeds,
                 text_embeddings=text_emb_inputs["text_emb_sentence"],
                 feat_sizes=feat_sizes,
                 previous_ref_feats_list=previous_ref_feats_list,
                 previous_ref_pos_embeds_list=previous_ref_pos_embeds_list
             )
+            referring_vision_feats[-1] = fusion_image_embeddings
             # fusion_image_embeddings (H * W, B, C)， fusion_text_embeddings (B, N, C)
 
             # Define a mask decoder to fuse text with image features
             pix_feat = self._prepare_memory_conditioned_features(
                 frame_idx=frame_idx,
                 is_init_cond_frame=True,  # Treat it as init_cond_frame, no need to consider the previous memory
-                current_vision_feats=[fusion_image_embeddings],
-                current_vision_pos_embeds=current_vision_pos_embeds[-1:],
-                feat_sizes=feat_sizes[-1:],
+                current_vision_feats=referring_vision_feats,
+                current_vision_pos_embeds=current_vision_pos_embeds,
+                feat_sizes=feat_sizes,
                 output_dict=output_dict,
                 num_frames=num_frames,
                 track_in_reverse=track_in_reverse,
             )
+            referring_mask_inputs = text_emb_inputs.get("dense_prompt_mask")
+            referring_fusion_cls_tokens = text_cls_tokens
+            referring_text_emb_cls = text_emb_inputs["text_emb_cls"] if self.forward_text_emb else None
+            if referring_mask_inputs is not None and referring_text_emb_cls is not None:
+                referring_fusion_cls_tokens = torch.cat([text_cls_tokens, referring_text_emb_cls], dim=1)
+                referring_text_emb_cls = None
             # apply SAM-style segmentation head
             multimask_output = self._use_multimask(is_init_cond_frame, point_inputs)
             sam_outputs = self._forward_sam_heads(
                 backbone_features=pix_feat,
                 point_inputs=None,
-                mask_inputs=None,
-                fusion_cls_tokens=text_cls_tokens,
-                text_emb_cls=text_emb_inputs["text_emb_cls"] if self.forward_text_emb else None,
+                mask_inputs=referring_mask_inputs,
+                fusion_cls_tokens=referring_fusion_cls_tokens,
+                text_emb_cls=referring_text_emb_cls,
                 high_res_features=high_res_features,
                 multimask_output=multimask_output,
             )

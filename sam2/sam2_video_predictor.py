@@ -732,14 +732,16 @@ class SAM2VideoPredictor(SAM2Base):
                     previous_ref_feats_per_obj[obj_idx].appendleft(current_vision_feats)
                     previous_ref_pos_embeds_per_obj[obj_idx].appendleft(current_vision_pos_embeds)
 
+                    credible_obj_score_threshold = getattr(self, "credible_obj_score_threshold", 0.9)
+                    credible_iou_threshold = getattr(self, "credible_iou_threshold", 0.7)
                     if not self.use_credible_initial_frame:
-                        if current_out['object_score_logits'][0, 0].sigmoid() > 0.9 and current_out['iou'][0] > 0.7:
+                        if current_out['object_score_logits'][0, 0].sigmoid() > credible_obj_score_threshold and current_out['iou'][0] > credible_iou_threshold:
                             self.select_frame_to_output(inference_state, obj_output_dict, frame_idx, current_out)
                     elif self.use_credible_initial_frame:
 
                         # Set the threshold of the object score. If it exceeds the threshold, put the frame into cond_frame_outputs.
-                        if current_out['object_score_logits'][0, 0].sigmoid() > 0.9:
-                            is_selected = current_out['iou'][0] > 0.7
+                        if current_out['object_score_logits'][0, 0].sigmoid() > credible_obj_score_threshold:
+                            is_selected = current_out['iou'][0] > credible_iou_threshold
                             if is_selected:
                                 previous_ref_candidates_per_obj[obj_idx].appendleft((frame_idx, current_out))
                         else:
@@ -974,7 +976,8 @@ class SAM2VideoPredictor(SAM2Base):
         tpos_sign_mul = -1 if track_in_reverse else 1
         # Step 1: condition the visual features of the current frame on previous memories
         if not is_init_cond_frame:
-            if self.use_long_term_memory:
+            disable_non_cond_memory = getattr(self, "disable_non_cond_memory", False)
+            if self.use_long_term_memory and not disable_non_cond_memory:
                 prev_frame_idx = frame_idx - 1
                 prev_output = output_dict["non_cond_frame_outputs"].get(prev_frame_idx, None)
                 if prev_output is not None:
@@ -1030,7 +1033,8 @@ class SAM2VideoPredictor(SAM2Base):
             # and specify its position t_pos in memory
             stride = 1 if self.training else self.memory_temporal_stride_for_eval
             short_mem = []
-            for t_pos in range(1, self.num_maskmem):
+            non_cond_tpos_range = [] if disable_non_cond_memory else range(1, self.num_maskmem)
+            for t_pos in non_cond_tpos_range:
                 t_rel = self.num_maskmem - t_pos  # how many frames before current frame
                 if t_rel == 1:
                     # for t_rel == 1, we take the last frame (regardless of r)
@@ -1080,7 +1084,7 @@ class SAM2VideoPredictor(SAM2Base):
                 to_cat_memory_pos_embed.append(maskmem_enc)
 
             # Step 3: Add long-term memory to memory, these memories are all non_cond_frame
-            if self.use_long_term_memory:
+            if self.use_long_term_memory and not disable_non_cond_memory:
                 for long_mem_frame_idx in output_dict["long_mem"]:
                     if long_mem_frame_idx in short_mem:
                         continue
